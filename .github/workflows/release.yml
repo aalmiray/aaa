@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version'
+        required: true
+      next-version:
+        description: 'Next version'
+        required: true
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRO: 'corretto'
+  COMMIT_AUTHOR: 'Release BOT'
+  COMMIT_EMAIL: 'noreply@acme.com'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRO }}
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@4d9f0ba0025fe599b4ebab900eb7f3a1d93ef4c2 # v5.0.0
+
+      - name: Build
+        run: ./gradlew build
+
+  check-version:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      continue: ${{ steps.check.outputs.continue }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check if snapshot
+        id: check
+        run: |
+          VERSION=${{ github.event.inputs.version }}
+          CURRENT_VERSION=$(grep -E "^version\s*=" gradle.properties | grep -Eo '[0-9A-Z\.\-]+')
+          TAG_NAME="v$VERSION"
+          
+          echo "Current version: $CURRENT_VERSION"
+          echo "Target version: $VERSION"
+          
+          SNAPSHOT=false
+          CONTINUE=false
+          
+          if [[ "$CURRENT_VERSION" == *"SNAPSHOT"* ]]; then
+            SNAPSHOT=true
+          fi
+          echo "Snapshot: $SNAPSHOT"
+          
+          git config --global user.email "$COMMIT_EMAIL"
+          git config --global user.name "$COMMIT_AUTHOR"
+
+          if [[ "$SNAPSHOT" == true ]]; then
+            # Check if we already have the release commit
+            if git log --oneline -10 | grep -q "Release version $VERSION"; then
+              echo "Release commit already exists, skipping version setting"
+            elif [ "$CURRENT_VERSION" != "$VERSION" ]; then
+              echo "Setting version to $VERSION"
+              sed -i -e "s/^version\s*.\s*.*/version = $VERSION/g" gradle.properties
+              git add gradle.properties
+              git commit -m "Release version $VERSION"
+              git push origin main
+              CONTINUE=true
+            else
+              echo "Version is already set to $VERSION"
+            fi
+            
+            # Check if tag already exists (locally or remotely)
+            if git tag -l "$TAG_NAME" | grep -q "$TAG_NAME"; then
+              echo "Tag $TAG_NAME already exists locally"
+            elif git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+              echo "Tag $TAG_NAME already exists remotely"
+            else
+              echo "Creating and pushing tag $TAG_NAME"
+              git tag -a "$TAG_NAME" -m "Release version $VERSION"
+              git push origin "$TAG_NAME"
+            fi
+          else
+            echo "Non snapshot state. Aborting release."
+          fi
+          
+          echo "continue=$CONTINUE" >> $GITHUB_OUTPUT
+
+  release:
+    needs: check-version
+    runs-on: ubuntu-latest
+    if: needs.check-version.outputs.continue == 'true'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup Java
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRO }}
+        cache: gradle
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@4d9f0ba0025fe599b4ebab900eb7f3a1d93ef4c2 # v5.0.0
+
+    - name: Build
+      run: ./gradlew build
+  
+  update-database:
+    needs: [check-version, release]
+    runs-on: ubuntu-latest
+    if: needs.check-version.outputs.continue == 'true'
+    environment: Dev
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Setup Java
+      uses: actions/setup-java@v5
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRO }}
+        cache: gradle
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@4d9f0ba0025fe599b4ebab900eb7f3a1d93ef4c2 # v5.0.0
+
+    - name: Build
+      run: ./gradlew build
+
+  update-version:
+    needs: update-database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Update version
+        id: check
+        run: |
+          VERSION=${{ github.event.inputs.next-version }}
+          echo "Setting version to $VERSION"
+          sed -i -e "s/^version\s*.\s*.*/version = $VERSION/g" gradle.properties
+          git add gradle.properties
+          git commit -m "Update version $VERSION"
+          git config --global user.email "$COMMIT_EMAIL"
+          git config --global user.name "$COMMIT_AUTHOR"
+          git push origin main
