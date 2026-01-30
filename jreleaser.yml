@@ -1,0 +1,17 @@
+project:
+  name: subhub-schema
+  description: SubHub Schema
+  links:
+    homepage: https://github.com/soliant/subhub-schema
+  languages:
+    java:
+      groupId: com.soliant.spindle
+      version: 21
+  inceptionYear: 2026
+
+release:
+  github:
+    overwrite: true
+    skipTag: true
+    changelog:
+      formatted: ALWAYS
